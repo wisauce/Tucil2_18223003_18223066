@@ -3,18 +3,22 @@ package main
 import (
 	"fmt"
 	"math"
+  "os"
+  "bufio"
+  "strconv"
+  "strings"
 )
 
-type Vertice struct {
+type Vertex struct {
 	x, y, z float64
 }
 
 type Face struct {
-	a, b, c Vertice
+	a, b, c Vertex
 }
 
 type BoundingBox struct {
-	min, max Vertice
+	min, max Vertex
 }
 
 type OctreeNode struct {
@@ -22,6 +26,7 @@ type OctreeNode struct {
 	children [8]*OctreeNode
 	faces []Face
 	boundingBox BoundingBox
+  skipped bool
 }
 
 func ComputeRootBound(faces [] Face) BoundingBox {
@@ -31,9 +36,8 @@ func ComputeRootBound(faces [] Face) BoundingBox {
   maxX := faces[0].a.x
   maxY := faces[0].a.y
   maxZ := faces[0].a.z
-
   for _, t := range faces {
-    for _, v := range [] Vertice{t.a, t.b, t.c} {
+    for _, v := range [] Vertex{t.a, t.b, t.c} {
       if v.x < minX { minX = v.x }
       if v.y < minY { minY = v.y }
       if v.z < minZ { minZ = v.z }
@@ -43,52 +47,160 @@ func ComputeRootBound(faces [] Face) BoundingBox {
       if v.z > maxZ { maxZ = v.z }
     }
   }
-
   sizeX := maxX - minX
   sizeY := maxY - minY
   sizeZ := maxZ - minZ
   maxSize := math.Max(math.Max(sizeX, sizeY), sizeZ)
 
   return BoundingBox{
-    min: Vertice{x: minX, y: minY, z: minZ},
-    max: Vertice{x: minX + maxSize, y: minY + maxSize, z: minZ + maxSize},
+    min: Vertex{x: minX, y: minY, z: minZ},
+    max: Vertex{x: minX + maxSize, y: minY + maxSize, z: minZ + maxSize},
   }
 }
 
 func faceIntersectsBox(face Face, box BoundingBox) bool {
-  // Compute triangle AABB (inline min/max)
+  // move triangle so box center at origin
+  cx := (box.min.x + box.max.x) * 0.5
+  cy := (box.min.y + box.max.y) * 0.5
+  cz := (box.min.z + box.max.z) * 0.5
 
-  minX := face.a.x
-  if face.b.x < minX { minX = face.b.x }
-  if face.c.x < minX { minX = face.c.x }
+  hx := (box.max.x - box.min.x) * 0.5
+  hy := (box.max.y - box.min.y) * 0.5
+  hz := (box.max.z - box.min.z) * 0.5
 
-  maxX := face.a.x
-  if face.b.x > maxX { maxX = face.b.x }
-  if face.c.x > maxX { maxX = face.c.x }
+  v0x := face.a.x - cx
+  v0y := face.a.y - cy
+  v0z := face.a.z - cz
 
-  minY := face.a.y
-  if face.b.y < minY { minY = face.b.y }
-  if face.c.y < minY { minY = face.c.y }
+  v1x := face.b.x - cx
+  v1y := face.b.y - cy
+  v1z := face.b.z - cz
 
-  maxY := face.a.y
-  if face.b.y > maxY { maxY = face.b.y }
-  if face.c.y > maxY { maxY = face.c.y }
+  v2x := face.c.x - cx
+  v2y := face.c.y - cy
+  v2z := face.c.z - cz
 
-  minZ := face.a.z
-  if face.b.z < minZ { minZ = face.b.z }
-  if face.c.z < minZ { minZ = face.c.z }
+  // compute edges
+  e0x := v1x - v0x
+  e0y := v1y - v0y
+  e0z := v1z - v0z
 
-  maxZ := face.a.z
-  if face.b.z > maxZ { maxZ = face.b.z }
-  if face.c.z > maxZ { maxZ = face.c.z }
+  e1x := v2x - v1x
+  e1y := v2y - v1y
+  e1z := v2z - v1z
 
-  // AABB vs AABB overlap
-  return (minX <= box.max.x && maxX >= box.min.x) &&
-         (minY <= box.max.y && maxY >= box.min.y) &&
-         (minZ <= box.max.z && maxZ >= box.min.z)
+  e2x := v0x - v2x
+  e2y := v0y - v2y
+  e2z := v0z - v2z
+
+  // 1 - test axes L = edge cross axes
+  // e0
+  p0 := v0z*e0y - v0y*e0z
+  p2 := v2z*e0y - v2y*e0z
+  minP, maxP := p0, p2
+  if minP > maxP { minP, maxP = maxP, minP }
+  rad := hz*math.Abs(e0y) + hy*math.Abs(e0z)
+  if minP > rad || maxP < -rad { return false }
+
+  p0 = v0x*e0z - v0z*e0x
+  p2 = v2x*e0z - v2z*e0x
+  minP, maxP = p0, p2
+  if minP > maxP { minP, maxP = maxP, minP }
+  rad = hx*math.Abs(e0z) + hz*math.Abs(e0x)
+  if minP > rad || maxP < -rad { return false }
+
+  p1 := v1y*e0x - v1x*e0y
+  p2 = v2y*e0x - v2x*e0y
+  minP, maxP = p1, p2
+  if minP > maxP { minP, maxP = maxP, minP }
+  rad = hx*math.Abs(e0y) + hy*math.Abs(e0x)
+  if minP > rad || maxP < -rad { return false }
+
+  // e1
+  p0 = v0z*e1y - v0y*e1z
+  p2 = v2z*e1y - v2y*e1z
+  minP, maxP = p0, p2
+  if minP > maxP { minP, maxP = maxP, minP }
+  rad = hz*math.Abs(e1y) + hy*math.Abs(e1z)
+  if minP > rad || maxP < -rad { return false }
+
+  p0 = v0x*e1z - v0z*e1x
+  p2 = v2x*e1z - v2z*e1x
+  minP, maxP = p0, p2
+  if minP > maxP { minP, maxP = maxP, minP }
+  rad = hx*math.Abs(e1z) + hz*math.Abs(e1x)
+  if minP > rad || maxP < -rad { return false }
+
+  p0 = v0y*e1x - v0x*e1y
+  p1 = v1y*e1x - v1x*e1y
+  minP, maxP = p0, p1
+  if minP > maxP { minP, maxP = maxP, minP }
+  rad = hx*math.Abs(e1y) + hy*math.Abs(e1x)
+  if minP > rad || maxP < -rad { return false }
+
+  // e2
+  p0 = v0z*e2y - v0y*e2z
+  p1 = v1z*e2y - v1y*e2z
+  minP, maxP = p0, p1
+  if minP > maxP { minP, maxP = maxP, minP }
+  rad = hz*math.Abs(e2y) + hy*math.Abs(e2z)
+  if minP > rad || maxP < -rad { return false }
+
+  p0 = v0x*e2z - v0z*e2x
+  p1 = v1x*e2z - v1z*e2x
+  minP, maxP = p0, p1
+  if minP > maxP { minP, maxP = maxP, minP }
+  rad = hx*math.Abs(e2z) + hz*math.Abs(e2x)
+  if minP > rad || maxP < -rad { return false }
+
+  p1 = v1y*e2x - v1x*e2y
+  p2 = v2y*e2x - v2x*e2y
+  minP, maxP = p1, p2
+  if minP > maxP { minP, maxP = maxP, minP }
+  rad = hx*math.Abs(e2y) + hy*math.Abs(e2x)
+  if minP > rad || maxP < -rad { return false }
+
+  // 2 - test bounding box axes
+  minX, maxX := v0x, v0x
+  if v1x < minX { minX = v1x }
+  if v1x > maxX { maxX = v1x }
+  if v2x < minX { minX = v2x }
+  if v2x > maxX { maxX = v2x }
+  if minX > hx || maxX < -hx { return false }
+
+  minY, maxY := v0y, v0y
+  if v1y < minY { minY = v1y }
+  if v1y > maxY { maxY = v1y }
+  if v2y < minY { minY = v2y }
+  if v2y > maxY { maxY = v2y }
+  if minY > hy || maxY < -hy { return false }
+
+  minZ, maxZ := v0z, v0z
+  if v1z < minZ { minZ = v1z }
+  if v1z > maxZ { maxZ = v1z }
+  if v2z < minZ { minZ = v2z }
+  if v2z > maxZ { maxZ = v2z }
+  if minZ > hz || maxZ < -hz { return false }
+
+  // 3 - triangle plane vs box
+  nx := e0y*e1z - e0z*e1y
+  ny := e0z*e1x - e0x*e1z
+  nz := e0x*e1y - e0y*e1x
+
+  d := -(nx*v0x + ny*v0y + nz*v0z)
+
+  r := hx*math.Abs(nx) + hy*math.Abs(ny) + hz*math.Abs(nz)
+  s := d
+
+  if s > r || s < -r {
+    return false
+  }
+
+  return true
 }
 
-func filterFaces(faces []Face, box BoundingBox) []Face {
+
+func FilterFaces(faces []Face, box BoundingBox) []Face {
   filtered := make([]Face, 0, len(faces))
 
   for _, face := range faces {
@@ -108,7 +220,7 @@ func ComputeChildBound (parent BoundingBox, i int) BoundingBox {
   midY := (min.y + max.y) / 2
   midZ := (min.z + max.z) / 2
 
-  var childMin, childMax Vertice
+  var childMin, childMax Vertex
 
   if i&1 == 0 {
     childMin.x = min.x
@@ -141,43 +253,111 @@ func ComputeChildBound (parent BoundingBox, i int) BoundingBox {
 func BuildOctree(faces []Face, bound BoundingBox, depth int) *OctreeNode {
   node := &OctreeNode{
       depth: depth,
-      children: [8]*OctreeNode{},
-      faces: faces, // remember to filter faces for each child node in a real implementation
       boundingBox: bound,
   }
-  if depth > 0 {
-    for i := range 8 {
-      childBound := ComputeChildBound(node.boundingBox, i)
-      // In a real implementation, you would filter faces that intersect with childBound
-      filteredFaces := filterFaces(faces, childBound)
-      node.children[i] = BuildOctree(filteredFaces, childBound, depth-1)
-    }
+
+  if len(faces) == 0 {
+    node.skipped = true
+    return node
+  }
+
+  if depth == 0 {
+    node.faces = faces
+    return node
+  }
+
+  for i := range 8 {
+    childBound := ComputeChildBound(node.boundingBox, i)
+    filteredFaces := FilterFaces(faces, childBound)
+    node.children[i] = BuildOctree(filteredFaces, childBound, depth-1)
   }
   
 	return node
 }
 
-func PrintOctree(node *OctreeNode, indent string) {
-  if node == nil {
-    fmt.Println(indent + "nil")
-    return
-  }
-  fmt.Printf("%sNode(depth=%d, faces=%d)\n", indent, node.depth, len(node.faces))
-  for i, child := range node.children {
-    if child != nil {
-      fmt.Printf("%s├── Child %d:\n", indent, i)
-      PrintOctree(child, indent+"│   ")
+func PrintOctree(node *OctreeNode) {
+  var printNode func(node *OctreeNode, depth int)
+  printNode = func(node *OctreeNode, depth int) {
+    if node == nil {
+      fmt.Printf("%snil\n", strings.Repeat("│   ", depth))
+      return
+    }
+    prefix := strings.Repeat("│   ", depth)
+    fmt.Printf("%sNode(depth=%d, faces=%d)\n", prefix, node.depth, len(node.faces))
+    fmt.Printf("%sBoundingBox(min=(%.2f, %.2f, %.2f), max=(%.2f, %.2f, %.2f))\n",
+      prefix, node.boundingBox.min.x, node.boundingBox.min.y, node.boundingBox.min.z,
+      node.boundingBox.max.x, node.boundingBox.max.y, node.boundingBox.max.z)
+    for i, child := range node.children {
+      if child != nil {
+        fmt.Printf("%s├── Child %d:\n", prefix, i)
+        printNode(child, depth+1)
+      }
     }
   }
+  printNode(node, 0)
+}
+
+func ParseObj(filename string) ([]Face, error) {
+  file, err := os.Open(filename)
+  if err != nil {
+    return nil, err
+  }
+  defer file.Close()
+  var vertices []Vertex
+  var faces []Face
+  scanner := bufio.NewScanner(file)
+
+  for scanner.Scan() {
+    line := strings.TrimSpace(scanner.Text())
+    if line == "" || strings.HasPrefix(line, "#") {
+      continue
+    }
+    parts := strings.Fields(line)
+    switch parts[0] {
+    case "v":
+      if len(parts) < 4 {
+        return nil, fmt.Errorf("invalid vertex line: %s", line)
+      }
+      x, _ := strconv.ParseFloat(parts[1], 64)
+      y, _ := strconv.ParseFloat(parts[2], 64)
+      z, _ := strconv.ParseFloat(parts[3], 64)
+      vertices = append(vertices, Vertex{x: x, y: y, z: z})
+    case "f":
+      if len(parts) < 4 {
+        return nil, fmt.Errorf("invalid face line: %s", line)
+      }
+      var indices []int
+      for i := 1; i < len(parts); i++ {
+        vals := strings.Split(parts[i], "/")
+        idx, err := strconv.Atoi(vals[0])
+        if err != nil {
+          return nil, err
+        }
+        indices = append(indices, idx-1)
+      }
+      for i := 1; i+1 < len(indices); i++ {
+        a := vertices[indices[0]]
+        b := vertices[indices[i]]
+        c := vertices[indices[i+1]]
+        faces = append(faces, Face{a: a, b: b, c: c})
+      }
+    }
+  }
+
+  if err := scanner.Err(); err != nil {
+    return nil, err
+  }
+
+  return faces, nil
 }
 
 func main() {
-	faces := []Face{
-		{a: Vertice{x: 0, y: 0, z: 0}, b: Vertice{x: 1, y: 0, z: 0}, c: Vertice{x: 0, y: 1, z: 0}},
-		{a: Vertice{x: 1, y: 0, z: 0}, b: Vertice{x: 1, y: 2, z: 0}, c: Vertice{x: 0, y: 1, z: 0}},
+	faces, err := ParseObj("examples/line.obj")
+	if err != nil {
+		fmt.Printf("Error parsing OBJ file: %v\n", err)
+		return
 	}
-	rootBound := ComputeRootBound(faces)
-	octree := BuildOctree(faces, rootBound,2)
-  PrintOctree(octree, "")
-
+  rootBound := ComputeRootBound(faces)
+  octree := BuildOctree(faces, rootBound, 2)
+  PrintOctree(octree)
 }
