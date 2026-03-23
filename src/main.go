@@ -24,7 +24,7 @@ type OctreeNode struct {
 	boundingBox BoundingBox
 }
 
-func (node *OctreeNode) ComputeRootBound(faces [] Face) BoundingBox {
+func ComputeRootBound(faces [] Face) BoundingBox {
   minX := faces[0].a.x
   minY := faces[0].a.y
   minZ := faces[0].a.z
@@ -55,7 +55,52 @@ func (node *OctreeNode) ComputeRootBound(faces [] Face) BoundingBox {
   }
 }
 
-func (node *OctreeNode) ComputeChildBound (parent BoundingBox, i int) BoundingBox {
+func faceIntersectsBox(face Face, box BoundingBox) bool {
+  // Compute triangle AABB (inline min/max)
+
+  minX := face.a.x
+  if face.b.x < minX { minX = face.b.x }
+  if face.c.x < minX { minX = face.c.x }
+
+  maxX := face.a.x
+  if face.b.x > maxX { maxX = face.b.x }
+  if face.c.x > maxX { maxX = face.c.x }
+
+  minY := face.a.y
+  if face.b.y < minY { minY = face.b.y }
+  if face.c.y < minY { minY = face.c.y }
+
+  maxY := face.a.y
+  if face.b.y > maxY { maxY = face.b.y }
+  if face.c.y > maxY { maxY = face.c.y }
+
+  minZ := face.a.z
+  if face.b.z < minZ { minZ = face.b.z }
+  if face.c.z < minZ { minZ = face.c.z }
+
+  maxZ := face.a.z
+  if face.b.z > maxZ { maxZ = face.b.z }
+  if face.c.z > maxZ { maxZ = face.c.z }
+
+  // AABB vs AABB overlap
+  return (minX <= box.max.x && maxX >= box.min.x) &&
+         (minY <= box.max.y && maxY >= box.min.y) &&
+         (minZ <= box.max.z && maxZ >= box.min.z)
+}
+
+func filterFaces(faces []Face, box BoundingBox) []Face {
+  filtered := make([]Face, 0, len(faces))
+
+  for _, face := range faces {
+    if faceIntersectsBox(face, box) {
+      filtered = append(filtered, face)
+    }
+  }
+
+  return filtered
+}
+
+func ComputeChildBound (parent BoundingBox, i int) BoundingBox {
   min := parent.min
   max := parent.max
 
@@ -93,23 +138,46 @@ func (node *OctreeNode) ComputeChildBound (parent BoundingBox, i int) BoundingBo
 }
 
 
-func BuildOctree(faces []Face, depth int) *OctreeNode {
-	node := &OctreeNode{}
-	node.depth = depth
-	node.children = [8]*OctreeNode{}
-	node.faces = faces
-	node.boundingBox = node.ComputeRootBound(faces)
+func BuildOctree(faces []Face, bound BoundingBox, depth int) *OctreeNode {
+  node := &OctreeNode{
+      depth: depth,
+      children: [8]*OctreeNode{},
+      faces: faces, // remember to filter faces for each child node in a real implementation
+      boundingBox: bound,
+  }
+  if depth > 0 {
+    for i := range 8 {
+      childBound := ComputeChildBound(node.boundingBox, i)
+      // In a real implementation, you would filter faces that intersect with childBound
+      filteredFaces := filterFaces(faces, childBound)
+      node.children[i] = BuildOctree(filteredFaces, childBound, depth-1)
+    }
+  }
+  
 	return node
 }
 
+func PrintOctree(node *OctreeNode, indent string) {
+  if node == nil {
+    fmt.Println(indent + "nil")
+    return
+  }
+  fmt.Printf("%sNode(depth=%d, faces=%d)\n", indent, node.depth, len(node.faces))
+  for i, child := range node.children {
+    if child != nil {
+      fmt.Printf("%s├── Child %d:\n", indent, i)
+      PrintOctree(child, indent+"│   ")
+    }
+  }
+}
 
 func main() {
-	// parse object and convert to faces
 	faces := []Face{
 		{a: Vertice{x: 0, y: 0, z: 0}, b: Vertice{x: 1, y: 0, z: 0}, c: Vertice{x: 0, y: 1, z: 0}},
 		{a: Vertice{x: 1, y: 0, z: 0}, b: Vertice{x: 1, y: 2, z: 0}, c: Vertice{x: 0, y: 1, z: 0}},
 	}
-	octree := BuildOctree(faces, 2)
-	fmt.Println(octree.boundingBox)
+	rootBound := ComputeRootBound(faces)
+	octree := BuildOctree(faces, rootBound,2)
+  PrintOctree(octree, "")
 
 }
