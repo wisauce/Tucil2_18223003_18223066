@@ -1,6 +1,8 @@
 package main
 
 import (
+  "path/filepath"
+  "time"
 	"fmt"
 	"math"
   "os"
@@ -298,66 +300,186 @@ func PrintOctree(node *OctreeNode) {
 }
 
 func ParseObj(filename string) ([]Face, error) {
-  file, err := os.Open(filename)
-  if err != nil {
-    return nil, err
-  }
-  defer file.Close()
-  var vertices []Vertex
-  var faces []Face
-  scanner := bufio.NewScanner(file)
+	file, err := os.Open(filename)
+	if err != nil {
+		return nil, fmt.Errorf("gagal membuka file: %w", err)
+	}
+	defer file.Close()
 
-  for scanner.Scan() {
-    line := strings.TrimSpace(scanner.Text())
-    if line == "" || strings.HasPrefix(line, "#") {
-      continue
-    }
-    parts := strings.Fields(line)
-    switch parts[0] {
-    case "v":
-      if len(parts) < 4 {
-        return nil, fmt.Errorf("invalid vertex line: %s", line)
-      }
-      x, _ := strconv.ParseFloat(parts[1], 64)
-      y, _ := strconv.ParseFloat(parts[2], 64)
-      z, _ := strconv.ParseFloat(parts[3], 64)
-      vertices = append(vertices, Vertex{x: x, y: y, z: z})
-    case "f":
-      if len(parts) < 4 {
-        return nil, fmt.Errorf("invalid face line: %s", line)
-      }
-      var indices []int
-      for i := 1; i < len(parts); i++ {
-        vals := strings.Split(parts[i], "/")
-        idx, err := strconv.Atoi(vals[0])
-        if err != nil {
-          return nil, err
-        }
-        indices = append(indices, idx-1)
-      }
-      for i := 1; i+1 < len(indices); i++ {
-        a := vertices[indices[0]]
-        b := vertices[indices[i]]
-        c := vertices[indices[i+1]]
-        faces = append(faces, Face{a: a, b: b, c: c})
-      }
-    }
-  }
+	var vertices []Vertex
+	var faces []Face
+	scanner := bufio.NewScanner(file)
 
-  if err := scanner.Err(); err != nil {
-    return nil, err
-  }
+	for scanner.Scan() {
+		line := strings.TrimSpace(scanner.Text())
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
 
-  return faces, nil
+		parts := strings.Fields(line)
+		switch parts[0] {
+		case "v":
+			if len(parts) >= 4 {
+				x, _ := strconv.ParseFloat(parts[1], 64)
+				y, _ := strconv.ParseFloat(parts[2], 64)
+				z, _ := strconv.ParseFloat(parts[3], 64)
+				vertices = append(vertices, Vertex{x: x, y: y, z: z})
+			}
+		case "f":
+			if len(parts) >= 4 {
+				var indices []int
+				for i := 1; i < len(parts); i++ {
+					vals := strings.Split(parts[i], "/")
+					idx, _ := strconv.Atoi(vals[0])
+					indices = append(indices, idx-1)
+				}
+				for i := 1; i+1 < len(indices); i++ {
+					if indices[0] < len(vertices) && indices[i] < len(vertices) && indices[i+1] < len(vertices) {
+						faces = append(faces, Face{
+							a: vertices[indices[0]],
+							b: vertices[indices[i]],
+							c: vertices[indices[i+1]],
+						})
+					}
+				}
+			}
+		}
+	}
+
+	return faces, scanner.Err()
+}
+
+func CollectVoxelBoxes(node *OctreeNode, boxes *[]BoundingBox) {
+	if node == nil || node.skipped {
+		return
+	}
+	if node.depth == 0 {
+		if len(node.faces) > 0 {
+			*boxes = append(*boxes, node.boundingBox)
+		}
+		return
+	}
+	for i := 0; i < 8; i++ {
+		CollectVoxelBoxes(node.children[i], boxes)
+	}
+}
+
+func ExportToObj(boxes []BoundingBox, outputPath string) error {
+	file, err := os.Create(outputPath)
+	if err != nil {
+		return err
+	}
+	defer file.Close()
+
+	writer := bufio.NewWriter(file)
+	vertexOffset := 1
+
+	for _, box := range boxes {
+		min, max := box.min, box.max
+		vertices := []Vertex{
+			{min.x, min.y, min.z}, {max.x, min.y, min.z}, {max.x, max.y, min.z}, {min.x, max.y, min.z},
+			{min.x, min.y, max.z}, {max.x, min.y, max.z}, {max.x, max.y, max.z}, {min.x, max.y, max.z},
+		}
+
+		for _, v := range vertices {
+			fmt.Fprintf(writer, "v %.6f %.6f %.6f\n", v.x, v.y, v.z)
+		}
+
+		facesIdx := [][]int{
+			{1, 3, 2}, {1, 4, 3}, {5, 6, 7}, {5, 7, 8},
+			{1, 2, 6}, {1, 6, 5}, {4, 8, 7}, {4, 7, 3},
+			{1, 5, 8}, {1, 8, 4}, {2, 3, 7}, {2, 7, 6},
+		}
+
+		for _, f := range facesIdx {
+			fmt.Fprintf(writer, "f %d %d %d\n", f[0]-1+vertexOffset, f[1]-1+vertexOffset, f[2]-1+vertexOffset)
+		}
+		vertexOffset += 8
+	}
+
+	return writer.Flush()
+}
+
+func CollectStats(node *OctreeNode, maxDepth int, created []int, skipped []int) {
+	if node == nil {
+		return
+	}
+	level := maxDepth - node.depth
+	created[level]++
+
+	if node.skipped {
+		skipped[level]++
+		return 
+	}
+	for i := 0; i < 8; i++ {
+		if node.children[i] != nil {
+			CollectStats(node.children[i], maxDepth, created, skipped)
+		}
+	}
 }
 
 func main() {
-	faces, err := ParseObj("examples/line.obj")
-	if err != nil {
-		fmt.Printf("Error parsing OBJ file: %v\n", err)
+	if len(os.Args) != 3 {
+		fmt.Println("Cara penggunaan: go run main.go <path_file.obj> <depth_maksimum>")
 		return
 	}
-  rootBound := ComputeRootBound(faces)
-  octree := BuildOctree(faces, rootBound, 2)
-  PrintOctree(octree)
+
+	filename := os.Args[1]
+	depth, err := strconv.Atoi(os.Args[2])
+	if err != nil || depth < 0 {
+		fmt.Println("Error: Parameter kedalaman (depth) harus berupa bilangan bulat positif.")
+		return
+	}
+
+	startTime := time.Now()
+	fmt.Printf("Memproses file: %s dengan kedalaman maksimal: %d\n", filename, depth)
+
+	faces, err := ParseObj(filename)
+	if err != nil {
+		fmt.Printf("Error validasi input: %v\n", err)
+		return
+	}
+	if len(faces) == 0 {
+		fmt.Println("Error: Tidak ada data bidang (faces) yang valid di file OBJ.")
+		return
+	}
+
+	octree := BuildOctree(faces, ComputeRootBound(faces), depth)
+	
+	var voxelBoxes []BoundingBox
+	CollectVoxelBoxes(octree, &voxelBoxes)
+
+	baseName := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
+	outPath := filepath.Join("test", fmt.Sprintf("%s-voxelized.obj", baseName))
+	
+	if err := ExportToObj(voxelBoxes, outPath); err != nil {
+		fmt.Printf("Error saat menyimpan file output: %v\n", err)
+		return
+	}
+
+	elapsedTime := time.Since(startTime)
+
+	createdNodes := make([]int, depth+1)
+	skippedNodes := make([]int, depth+1)
+	CollectStats(octree, depth, createdNodes, skippedNodes)
+
+	absPath, _ := filepath.Abs(outPath)
+	numVoxels := len(voxelBoxes)
+
+	fmt.Println("\n==================================")
+	fmt.Printf("Banyaknya voxel yang terbentuk: %d\n", numVoxels)
+	fmt.Printf("Banyaknya vertex yang terbentuk: %d\n", numVoxels*8)
+	fmt.Printf("Banyaknya faces yang terbentuk: %d\n", numVoxels*12)
+	
+	fmt.Println("\nStatistik Octree:")
+	fmt.Println("Kedalaman | Terbentuk | Dilewati")
+	fmt.Println("----------------------------------")
+	for i := 1; i <= depth; i++ {
+		fmt.Printf("Level %-3d | %-9d | %-8d\n", i, createdNodes[i], skippedNodes[i])
+	}
+	
+	fmt.Printf("\nKedalaman octree: %d\n", depth)
+	fmt.Printf("Lama waktu eksekusi: %v\n", elapsedTime)
+	fmt.Printf("Lokasi file disimipan: %s\n", absPath)
+	fmt.Println("==================================")
 }
