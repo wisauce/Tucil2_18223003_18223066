@@ -431,7 +431,6 @@ func main() {
 		return
 	}
 
-	startTime := time.Now()
 	fmt.Printf("Memproses file: %s dengan kedalaman maksimal: %d\n", filename, depth)
 
 	faces, err := ParseObj(filename)
@@ -444,10 +443,17 @@ func main() {
 		return
 	}
 
+  startTime := time.Now()
 	octree := BuildOctree(faces, ComputeRootBound(faces), depth)
 	
 	var voxelBoxes []BoundingBox
 	CollectVoxelBoxes(octree, &voxelBoxes)
+
+  createdNodes := make([]int, depth+1)
+	skippedNodes := make([]int, depth+1)
+	CollectStats(octree, depth, createdNodes, skippedNodes)
+
+	elapsedTime := time.Since(startTime)
 
 	baseName := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
 	outPath := filepath.Join("test", fmt.Sprintf("%s-voxelized.obj", baseName))
@@ -456,12 +462,6 @@ func main() {
 		fmt.Printf("Error saat menyimpan file output: %v\n", err)
 		return
 	}
-
-	elapsedTime := time.Since(startTime)
-
-	createdNodes := make([]int, depth+1)
-	skippedNodes := make([]int, depth+1)
-	CollectStats(octree, depth, createdNodes, skippedNodes)
 
 	absPath, _ := filepath.Abs(outPath)
 	numVoxels := len(voxelBoxes)
