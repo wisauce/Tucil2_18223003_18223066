@@ -463,7 +463,7 @@ func main() {
 	elapsedTime := time.Since(startTime)
 
 	baseName := strings.TrimSuffix(filepath.Base(filename), filepath.Ext(filename))
-	outPath := filepath.Join("test", fmt.Sprintf("%s-voxelized.obj", baseName))
+	outPath := filepath.Join("test", fmt.Sprintf("%s-voxelized-%d.obj", baseName, depth))
 	
 	if err := ExportToObj(voxelBoxes, outPath); err != nil {
 		fmt.Printf("Error saat menyimpan file output: %v\n", err)
