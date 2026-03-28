@@ -1,14 +1,15 @@
 package main
 
 import (
-  "path/filepath"
-  "time"
+	"bufio"
 	"fmt"
 	"math"
-  "os"
-  "bufio"
-  "strconv"
-  "strings"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+	"sync"
+	"time"
 )
 
 type Vertex struct {
@@ -268,11 +269,17 @@ func BuildOctree(faces []Face, bound BoundingBox, depth int) *OctreeNode {
     return node
   }
 
-  for i := range 8 {
-    childBound := ComputeChildBound(node.boundingBox, i)
-    filteredFaces := FilterFaces(faces, childBound)
-    node.children[i] = BuildOctree(filteredFaces, childBound, depth-1)
+  var wg sync.WaitGroup
+  for i := 0; i < 8; i++ {
+    wg.Add(1)
+    go func(childIdx int) {
+      defer wg.Done()
+      childBound := ComputeChildBound(node.boundingBox, childIdx)
+      filteredFaces := FilterFaces(faces, childBound)
+      node.children[childIdx] = BuildOctree(filteredFaces, childBound, depth-1)
+    }(i)
   }
+  wg.Wait()
   
 	return node
 }
