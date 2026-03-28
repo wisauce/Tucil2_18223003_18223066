@@ -487,6 +487,6 @@ func main() {
 	
 	fmt.Printf("\nKedalaman octree: %d\n", depth)
 	fmt.Printf("Lama waktu eksekusi: %v\n", elapsedTime)
-	fmt.Printf("Lokasi file disimipan: %s\n", absPath)
+	fmt.Printf("Lokasi file disimpan: %s\n", absPath)
 	fmt.Println("==================================")
 }
